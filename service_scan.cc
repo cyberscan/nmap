@@ -77,6 +77,8 @@
 #include "nmap_tty.h"
 
 #include <errno.h>
+#include <sstream>
+#include <iomanip>
 
 #if HAVE_OPENSSL
 /* OpenSSL 1.0.0 needs _WINSOCKAPI_ to be defined, otherwise it loads
@@ -138,7 +140,7 @@ public:
   // is placed in these 6 strings.  Otherwise the string will be 0 length.
   char product_matched[80];
   char version_matched[80];
-  char extrainfo_matched[256];
+  char extrainfo_matched[25600];
   char hostname_matched[80];
   char ostype_matched[32];
   char devicetype_matched[32];
@@ -503,7 +505,7 @@ const struct MatchDetails *ServiceProbeMatch::testMatch(const u8 *buf, int bufle
   int rc;
   static char product[80];
   static char version[80];
-  static char info[256];  /* We will truncate with ... later */
+  static char info[25600];  /* We will truncate with ... later */
   static char hostname[80];
   static char ostype[32];
   static char devicetype[32];
@@ -931,6 +933,14 @@ static int dotmplsubst(const u8 *subject, int subjectlen,
 }
 
 
+static std::string toHexEscapedString(const u8* ch) {
+    std::stringstream ss;
+    ss << "\\x" << std::setfill('0') << std::setw(2) << std::hex << static_cast<unsigned int>(*ch);
+    unsigned int ch_int = static_cast<unsigned int>(*ch);
+    return ss.str();
+}
+
+
 // Use the version templates and the match data included here
 // to put the version info into the given strings, (as long as the sizes
 // are sufficient).  Returns zero for success.  If no template is available
@@ -986,16 +996,39 @@ int ServiceProbeMatch::getVersionStr(const u8 *subject, int subjectlen,
     }
   }
 
-  if (info_template) {
-    rc = dotmplsubst(subject, subjectlen, ovector, nummatches, info_template, info, infolen);
-    if (rc != 0) {
-      error("Warning: Servicescan failed to fill info_template (subjectlen: %d, infolen: %d). Capture exceeds length? Match string was line %d: i/%s/%s/%s", subjectlen, infolen, deflineno,
-            (product_template)? product_template : "",
-            (version_template)? version_template : "",
-            (info_template)? info_template : "");
-      if (infolen > 0) *info = '\0';
-      retval = -1;
+  //jr: skip info template to always store raw input in info output field instead
+  //if (info_template) {
+  //  rc = dotmplsubst(subject, subjectlen, ovector, nummatches, info_template, info, infolen);
+  //  if (rc != 0) {
+  //    error("Warning: Servicescan failed to fill info_template (subjectlen: %d, infolen: %d). Capture exceeds length? Match string was line %d: i/%s/%s/%s", subjectlen, infolen, deflineno,
+  //          (product_template)? product_template : "",
+  //          (version_template)? version_template : "",
+  //          (info_template)? info_template : "");
+  //    if (infolen > 0) *info = '\0';
+  //    retval = -1;
+  //  }
+  //}
+
+  
+  
+  char* info_dst = info;
+
+
+  for (int i = 0; i < MIN(infolen, subjectlen); i++) {
+    char* copy_char = (char*)subject + i;
+    if (isprint((int)subject[i])) {
+       *info_dst++ = *copy_char;
     }
+    //non printable chars will somehow break this being stored into the xml, to keep all info store the hex escaped version instead
+    else {
+        //the cast to char messes up the call as casting the non ascii char to int will be negative
+        std::string esc_seq = toHexEscapedString(subject + i);
+        for (int j = 0; j < esc_seq.length(); j++) {
+            char esc_ch = esc_seq[j];
+            *info_dst++ = esc_ch;
+        }
+    }
+    *info_dst = '\0';
   }
 
   if (hostname_template) {
